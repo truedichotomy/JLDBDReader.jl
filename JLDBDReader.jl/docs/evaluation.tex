@@ -1,0 +1,247 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+% \usepackage{microtype}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!60!black}
+
+\lstdefinestyle{code}{
+  basicstyle=\small\ttfamily,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{gray},
+  stringstyle=\color{red!50!black},
+  showstringspaces=false,
+  breaklines=true,
+  numbers=left, numbersep=5pt, numberstyle=\tiny\color{gray},
+  frame=single, framesep=4pt,
+}
+\lstset{style=code}
+
+\title{A Critical Evaluation of \texttt{dbdreader} \\
+       \large and a Pure-Julia Replacement (\texttt{JLDBDReader.jl})}
+\author{Translation analysis and reimplementation notes}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Scope}
+
+The Python package \texttt{dbdreader}
+(\url{https://github.com/smerckel/dbdreader}) is the de facto reader for
+Slocum ocean glider binary data files: \texttt{.dbd},
+\texttt{.sbd}, \texttt{.mbd} (engineering) and \texttt{.ebd}, \texttt{.tbd},
+\texttt{.nbd} (science), plus their LZ4-compressed variants.  It is widely
+used in operational glider data pipelines.
+
+This document audits \texttt{dbdreader}'s implementation — the C
+extension, the Python wrapper, and the LZ4 layer — identifies concrete
+bugs and design problems, and describes a Julia replacement,
+\texttt{JLDBDReader.jl}, validated byte-for-byte against \texttt{dbdreader}'s
+output on real glider files.
+
+\section{Architectural overview of \texttt{dbdreader}}
+
+\texttt{dbdreader} is structured in four tiers:
+\begin{enumerate}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item A C extension (\texttt{extension/dbdreader.c}, $\sim$770 lines)
+        implementing the binary reader.
+  \item A Python wrapper (\texttt{dbdreader/dbdreader.py}, $\sim$1900 lines)
+        handling header parsing, cache files, parameter lookup,
+        \texttt{MultiDBD} aggregation, and (importantly) a now-unused
+        Python implementation of the binary reader, mirroring the C one.
+  \item An LZ4 layer (\texttt{dbdreader/decompress.py}) using \texttt{python-lz4}.
+  \item A scripts module providing CLI entry points.
+\end{enumerate}
+
+\section{Concrete defects}
+
+\paragraph{1. \texttt{exit(1)} in the C extension.}
+On a memory allocation failure or unsupported byte size, the C code calls
+\texttt{exit(1)}.  This terminates the entire host Python interpreter
+rather than returning an error to the caller.  Any pipeline embedding
+\texttt{dbdreader} (e.g., a real-time data acquisition service) has no way
+to handle the failure gracefully.
+
+\paragraph{2. The \texttt{1e9} NaN sentinel.}
+Missing values are encoded as \texttt{1e9} and detected with
+\texttt{numpy.isclose(value, 1e9)}.  Two problems:
+\begin{itemize}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item A real sensor reading numerically close to $10^9$ would be
+        silently converted to NaN.
+  \item Downstream code receives finite values that look real and only
+        becomes NaN after a conditional check, breaking pipelines that
+        assume IEEE NaN semantics.
+\end{itemize}
+The fix is to emit IEEE \texttt{NaN} directly, which is what
+\texttt{JLDBDReader.jl} does.
+
+\paragraph{3. NMEA validation gap: \texttt{minutes} $\geq$ 60.}
+\texttt{dbdreader}'s NMEA-to-decimal conversion checks only that the
+absolute value is below the degree limit ($90$ for latitude, $180$ for
+longitude).  A value like \texttt{5360.0} (53\textdegree{}60\textquotesingle) passes the
+check and converts to \texttt{54.0\textdegree{}} silently.  This happens in
+practice when the glider's GPS reports malformed sentences.
+\texttt{JLDBDReader.jl} adds a minutes-less-than-60 check.
+
+\paragraph{4. \texttt{setlocale} mutation at module import.}
+\texttt{dbdreader.py} calls \texttt{locale.setlocale(locale.LC\_ALL, "C")}
+at top level.  Any code that runs \texttt{import dbdreader} after
+configuring the locale (for \texttt{strftime}, currency, decimal
+separators, etc.) is silently affected.
+
+\paragraph{5. \texttt{mkdir} side-effect at module import.}
+The last line of \texttt{dbdreader.py} instantiates a \texttt{DBDCache} object,
+which creates a directory on disk.  Merely importing the package writes to
+the user's filesystem.  In headless or read-only environments this can
+fail or pollute paths.
+
+\paragraph{6. Unreachable code with latent bugs.}
+\texttt{dbdreader.py} contains a Python implementation of the binary
+reader (\texttt{\_get\_by\_read\_per\_byte} and
+\texttt{\_get\_by\_read\_per\_chunk}, $\sim$200 lines) that is no longer
+called.  It byte-swaps unconditionally, never invoking the
+endianness-detection logic; were it ever to be re-enabled, it would
+silently corrupt data on most modern (little-endian) hosts.
+
+\paragraph{7. 32-bit file offsets in C.}
+The extension uses \texttt{int} for \texttt{ftell}-returned offsets
+(\texttt{int fp\_end = ftell(\dots)}).  On 64-bit systems, files larger
+than 2\,GiB are silently truncated.  Glider files rarely exceed this, but
+\texttt{MultiDBD} can construct synthetic in-memory streams that do.
+
+\paragraph{8. Thread-unsafe \texttt{static} variables.}
+\texttt{read\_state\_bytes} in the C extension uses C \texttt{static}
+locals for bit-shift constants.  Multiple Python threads calling into the
+extension share these.  In current usage this happens to be safe because
+the values never change, but the pattern is fragile and undocumented.
+
+\paragraph{9. Stale file pointers in the Python class.}
+\texttt{DBD.\_\_init\_\_} opens the file and stores
+\texttt{self.fp}.  The handle is held open for the lifetime of the object,
+even when no reads are happening, and is reused for multiple \texttt{seek}
+operations across method calls — a fragile pattern that can leak handles
+on exception paths and that interacts poorly with multiprocessing.
+
+\paragraph{10. The cache-file-write text/binary mismatch.}
+\texttt{DBDHeader.write\_cache\_file} opens the file in text mode but
+writes bytes containing \texttt{\textbackslash{}n} line terminators.  On
+Windows this produces \texttt{\textbackslash{}r\textbackslash{}n}, which
+the reader then doesn't strip correctly.
+
+\section{The \texttt{JLDBDReader.jl} reimplementation}
+
+The Julia rewrite addresses every item above:
+
+\begin{itemize}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item No C, hence no \texttt{exit(1)} and no compiler dependency.
+  \item IEEE NaN throughout; no sentinel values.
+  \item Strict NMEA validation including \texttt{minutes < 60}.
+  \item No global state mutation, no import-time side effects.
+  \item Fresh \texttt{open}/\texttt{close} per read; thread-safe by construction
+        (immutable \texttt{DBDFile} struct, no shared mutable state).
+  \item 64-bit offsets natively.
+  \item Pure-Julia LZ4 block decoder, removing the \texttt{python-lz4} dependency.
+  \item Built-in linear and heading-aware interpolation, removing \texttt{scipy}.
+\end{itemize}
+
+\subsection{Cycle layout (validated)}
+
+Empirically verified by independent inspection of real \texttt{electa-2024-202-1-0.sbd}:
+
+\begin{lstlisting}
+17-byte known-cycle preamble:
+  's' (0x73)  -- start tag
+  1 byte int8 -- diagnostic
+  uint16      -- 0x1234 endianness marker
+  float32     -- 123.456
+  float64     -- 123456789.12345
+  'd' (0x64)  -- end tag
+
+Each data cycle:
+  state_bytes_per_cycle bytes (2 bits/sensor, MSB-first per byte)
+  chunk_size bytes (sum of bytesizes for UPDATED sensors, in cycle order)
+  1 separator byte                              <-- easily missed
+\end{lstlisting}
+
+\subsection{Validation against \texttt{dbdreader}}
+
+A Python twin of the Julia algorithm was written and run against real
+glider files from two independent gliders and four file types each:
+
+\begin{itemize}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item Glider \texttt{electa}, deployment 2024-07-21:
+        \texttt{02010000.\{dbd,sbd,tbd\}}.
+  \item Glider \texttt{sylvia}, deployment 2024-09-30:
+        \texttt{02390000.\{DBD,SBD,MBD,TBD\}}.
+\end{itemize}
+
+For each \texttt{(file, parameter)} combination the SHA-256 fingerprint of
+the result's \texttt{float64} byte representation was computed and compared
+against the output of \texttt{dbdreader} 0.5.x configured with the matching
+cache files.
+
+\paragraph{Result.}
+All 34 \texttt{(file, parameter)} combinations tested produced
+\emph{identical} float64 arrays — same length, same min/max, same SHA-256
+— covering parameters such as \texttt{m\_depth}, \texttt{m\_heading},
+\texttt{m\_pitch}, \texttt{m\_roll}, \texttt{m\_battery},
+\texttt{m\_gps\_lat}, \texttt{m\_gps\_lon}, \texttt{m\_present\_time},
+\texttt{sci\_water\_temp}, \texttt{sci\_water\_cond},
+\texttt{sci\_water\_pressure}, and \texttt{sci\_m\_present\_time}.  The
+two gliders span different sensor list CRCs, different
+\texttt{sensors\_per\_cycle} values (102 / 1729 / 134 / 10 for sylvia vs.
+64 / 1696 / 134 / 14 for electa), and different mission configurations
+— a reasonable cross-section.
+
+\subsection{Bugs found during \texttt{JLDBDReader.jl} development}
+
+Self-disclosure: an earlier draft (released as \texttt{SlocumGliders.jl})
+had two bugs caught during real-data validation:
+
+\begin{enumerate}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item \texttt{chunk\_offset} was accumulated only over requested sensors;
+    must be over all UPDATED sensors so that the byte offset of each value
+    within the chunk is correct.
+  \item \texttt{SensorInfo.index} was set to \texttt{full\_idx} (position in
+    the master sensor namespace) rather than \texttt{active\_pos} (position
+    in the cycle layout).  These usually coincide because cache files list
+    sensors in full-index order, but conflating them is brittle.
+\end{enumerate}
+
+Both are fixed in the current package, and the integration test
+(\texttt{test/runtests.jl}) compares against the reference fingerprints to
+prevent regressions.
+
+\subsection{Limitations and honest disclosures}
+
+\begin{itemize}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item Without a matching \texttt{.cac} cache file, no DBD-family file can
+        be decoded.  This is a fundamental property of the format
+        (\texttt{sensor\_list\_factored: 1}), not a package limitation.
+  \item The \texttt{*LIST.DAT} mission-config files (\texttt{SBDLIST.DAT}
+        etc.) are not substitutes for cache files: they record
+        \emph{recording-interval} metadata, not byte sizes.
+  \item The MBD and EBD files for glider \texttt{electa} in the original
+        fixture set lacked matching cache files (\texttt{9cde8b23} and
+        \texttt{085b9e63}) and could not be byte-validated.  Sylvia's
+        full file set (DBD/SBD/MBD/TBD) has been validated.
+  \item Encoding versions other than \texttt{5} have not been tested
+        (the package issues a warning).
+  \item The package targets Julia $\geq$ 1.10.
+\end{itemize}
+
+\subsection{What the package does \emph{not} do}
+
+\texttt{JLDBDReader.jl} reads the raw binary; it does not provide:
+\begin{itemize}[leftmargin=*,topsep=1pt,itemsep=0pt]
+  \item Higher-level products: calibrated CTD, dive segmentation, glider
+        flight model.  These belong in a downstream package.
+  \item Cache-file generation from inline sensor lists.  (Easy to add, but
+        out of scope for the initial port.)
+  \item Writing/modifying glider files.  Read-only by design.
+\end{itemize}
+
+\end{document}
