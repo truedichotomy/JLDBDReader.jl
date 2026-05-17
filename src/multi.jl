@@ -86,6 +86,53 @@ end
 paired_filename(fn::AbstractString) =
     splitext(fn)[1] * paired_extension(splitext(fn)[2])
 
+"""
+    find_paired_file(fn, search_dirs) -> Union{String,Nothing}
+
+Look for the engineering/science sibling of `fn` (the file with the swapped
+second letter in its extension, e.g. `.dbd` ↔ `.ebd`).  Searches:
+
+1. `dirname(fn)` (the file's own directory).
+2. Every directory in `search_dirs` (which may be empty).
+
+Both the literal swapped-case extension and a case-toggled fallback are
+tried — i.e., if `fn` is `02390000.DBD` and the sibling on disk is
+`02390000.EBD`, that is found; if it's `02390000.ebd`, that is also found.
+
+Returns the first match, or `nothing`.
+"""
+function find_paired_file(fn::AbstractString,
+                          search_dirs::AbstractVector{<:AbstractString}=String[])::Union{String,Nothing}
+    stem, ext = splitext(fn)
+    base = basename(stem)
+
+    # `paired_extension` always returns lowercase; build both case variants
+    # and prefer the one matching the input's case style.
+    paired_lc = paired_extension(ext)
+    paired_uc = uppercase(paired_lc)
+    input_alpha = replace(ext, "."=>"")
+    exts_to_try = if !isempty(input_alpha) && all(isuppercase, input_alpha)
+        (paired_uc, paired_lc)
+    else
+        (paired_lc, paired_uc)
+    end
+
+    # Search the file's own directory first, then user-supplied additional dirs.
+    candidate_dirs = String[String(dirname(fn))]
+    for d in search_dirs
+        d in candidate_dirs || push!(candidate_dirs, String(d))
+    end
+
+    for d in candidate_dirs
+        isdir(d) || continue
+        for e in exts_to_try
+            p = joinpath(d, base * e)
+            isfile(p) && return p
+        end
+    end
+    return nothing
+end
+
 # ── MultiDBD type ─────────────────────────────────────────────────────────────
 
 """
@@ -112,26 +159,69 @@ struct MultiDBD
 end
 
 """
-    MultiDBD(; filenames=nothing, pattern=nothing, cachedir=nothing,
+    MultiDBD(; filenames=nothing, pattern=nothing,
+              eng_dir=nothing, sci_dir=nothing,
+              eng_pattern="*.[dDsSmM][bB][dD]", sci_pattern="*.[eEtTnN][bB][dD]",
+              cachedir=nothing,
               complement_files=false, complemented_files_only=false,
               banned_missions=String[], missions=String[],
               max_files=nothing, skip_initial_line=true) -> MultiDBD
 
 Build a multi-file reader.
 
-# Keyword arguments
-- `filenames` : explicit list of paths.
-- `pattern`   : glob pattern (e.g., `"data/*.[dDsS][bB][dD]"`).
-- `cachedir`  : cache directory (or `nothing` to use defaults).
-- `complement_files`         : auto-add matching eng↔sci pairs.
-- `complemented_files_only`  : keep only files that have a matching pair.
-- `banned_missions`          : skip files whose `mission_name` is in this list.
-- `missions`                 : keep only files whose `mission_name` is in this list.
-- `max_files`                : limit number of files (positive = first N, negative = last N).
-- `skip_initial_line`        : pass through to per-file reader (default `true`).
+# File-source keyword arguments (additive — combine freely)
+- `filenames`   : explicit list of paths.
+- `pattern`     : glob pattern (e.g., `"data/*.[dDsS][bB][dD]"`).
+- `eng_dir`     : directory to glob for engineering files.
+- `sci_dir`     : directory to glob for science files.  May differ from
+                  `eng_dir` — common when DBDs and EBDs are archived separately.
+- `eng_pattern` : glob pattern applied inside `eng_dir` (default matches
+                  `.dbd`/`.sbd`/`.mbd` in any case).
+- `sci_pattern` : glob pattern applied inside `sci_dir` (default matches
+                  `.ebd`/`.tbd`/`.nbd` in any case).
+
+All four file-source mechanisms are unioned.  Files are classified as
+eng or sci by extension at open time, regardless of which mechanism brought
+them in — so e.g. an `.sbd` listed under `eng_dir` and an `.ebd` listed
+under `sci_dir` will form a valid pair.
+
+# Pair-completion arguments
+- `complement_files=true`        : for each loaded file, also add its sibling
+  if it exists in `eng_dir`, `sci_dir`, or the file's own directory.
+- `complemented_files_only=true` : keep only files whose sibling is findable
+  via the same multi-directory search.  Combine with `complement_files=true`
+  to enforce "every file has its pair, every pair has both halves".
+
+# Other arguments
+- `cachedir`         : cache directory (or `nothing` to use defaults).
+- `banned_missions`  : skip files whose `mission_name` is in this list.
+- `missions`         : keep only files whose `mission_name` is in this list.
+- `max_files`        : limit number of files (positive = first N, negative = last N).
+- `skip_initial_line`: pass through to per-file reader (default `true`).
+
+# Examples
+```julia
+# Flat directory, everything together
+m = MultiDBD(pattern = "/data/*.[dDeE][bB][dD]", cachedir = "/cache")
+
+# Separate eng/sci directories
+m = MultiDBD(eng_dir = "/data/from-glider",
+             sci_dir = "/data/from-science",
+             cachedir = "/cache")
+
+# Enforce paired-only loading across separate directories
+m = MultiDBD(eng_dir = "/data/from-glider",
+             sci_dir = "/data/from-science",
+             cachedir = "/cache",
+             complemented_files_only = true)
+```
 """
 function MultiDBD(; filenames::Union{Nothing,Vector{<:AbstractString}}=nothing,
                     pattern::Union{Nothing,AbstractString}=nothing,
+                    eng_dir::Union{Nothing,AbstractString}=nothing,
+                    sci_dir::Union{Nothing,AbstractString}=nothing,
+                    eng_pattern::AbstractString="*.[dDsSmM][bB][dD]",
+                    sci_pattern::AbstractString="*.[eEtTnN][bB][dD]",
                     cachedir::Union{Nothing,AbstractString}=nothing,
                     complement_files::Bool=false,
                     complemented_files_only::Bool=false,
@@ -140,18 +230,28 @@ function MultiDBD(; filenames::Union{Nothing,Vector{<:AbstractString}}=nothing,
                     max_files::Union{Nothing,Int}=nothing,
                     skip_initial_line::Bool=true)
 
-    filenames === nothing && pattern === nothing &&
-        error("MultiDBD: provide `filenames` or `pattern`.")
+    if filenames === nothing && pattern === nothing &&
+       eng_dir === nothing && sci_dir === nothing
+        error("MultiDBD: provide at least one of `filenames`, `pattern`, `eng_dir`, `sci_dir`.")
+    end
 
-    # Gather initial file list
+    # Gather initial file list from all source mechanisms (unioned)
     fns = String[]
     filenames === nothing || append!(fns, String.(filenames))
     pattern === nothing   || append!(fns, glob_files(String(pattern)))
+    if eng_dir !== nothing
+        isdir(eng_dir) || error("MultiDBD: eng_dir does not exist: $eng_dir")
+        append!(fns, glob_files(joinpath(String(eng_dir), eng_pattern)))
+    end
+    if sci_dir !== nothing
+        isdir(sci_dir) || error("MultiDBD: sci_dir does not exist: $sci_dir")
+        append!(fns, glob_files(joinpath(String(sci_dir), sci_pattern)))
+    end
     unique!(fns)
     isempty(fns) && error("MultiDBD: no files found.")
     sort_slocum!(fns)
 
-    # max_files trimming
+    # max_files trimming (applies before complement, so user's intent is preserved)
     if max_files !== nothing
         n = length(fns)
         if max_files > 0
@@ -161,20 +261,30 @@ function MultiDBD(; filenames::Union{Nothing,Vector{<:AbstractString}}=nothing,
         end
     end
 
-    # File complementing
+    # Directories where the partner of a given file might live.
+    pair_search_dirs = String[]
+    eng_dir === nothing || push!(pair_search_dirs, String(eng_dir))
+    sci_dir === nothing || push!(pair_search_dirs, String(sci_dir))
+
+    # complement_files: add the sibling of each file if it exists in any
+    # of the candidate directories (the file's own dir + eng_dir + sci_dir).
     if complement_files
         extras = String[]
         for f in fns
-            mf = paired_filename(f)
-            if isfile(mf) && !(mf in fns)
+            mf = find_paired_file(f, pair_search_dirs)
+            if mf !== nothing && !(mf in fns)
                 push!(extras, mf)
             end
         end
         append!(fns, extras)
+        unique!(fns)
         sort_slocum!(fns)
     end
+
+    # complemented_files_only: drop files whose sibling cannot be found
+    # via the same multi-directory search.
     if complemented_files_only
-        filter!(f -> isfile(paired_filename(f)), fns)
+        filter!(f -> find_paired_file(f, pair_search_dirs) !== nothing, fns)
     end
 
     # Open each file

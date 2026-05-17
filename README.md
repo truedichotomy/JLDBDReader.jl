@@ -27,6 +27,35 @@ all_depth = get_data(m, "m_depth")
 t, T, C, P = get_sync(m, "sci_water_temp", "sci_water_cond", "sci_water_pressure")
 ```
 
+### Split-directory layouts
+
+When engineering and science files are archived in separate directories (common
+when DBDs come off the dockserver and EBDs arrive separately via SFMC), use
+`eng_dir` and `sci_dir`:
+
+```julia
+m = MultiDBD(eng_dir  = "/data/from-glider",
+             sci_dir  = "/data/from-science",
+             cachedir = "/data/cache")
+
+# Optional patterns to restrict file types within each directory
+m = MultiDBD(eng_dir     = "/data/from-glider",
+             sci_dir     = "/data/from-science",
+             eng_pattern = "*.[dD][bB][dD]",   # only DBDs
+             sci_pattern = "*.[eE][bB][dD]",   # only EBDs
+             cachedir    = "/data/cache")
+
+# Enforce "every file has a pair": drop files whose sibling is missing
+m = MultiDBD(eng_dir = "/data/from-glider",
+             sci_dir = "/data/from-science",
+             cachedir = "/data/cache",
+             complemented_files_only = true)
+```
+
+The `eng_dir`/`sci_dir` keywords combine with `filenames` and `pattern`
+additively — they're not mutually exclusive. Files are classified as eng or
+sci by extension at open time, regardless of which directory they came from.
+
 ## What this fixes vs `dbdreader`
 
 | Issue | `dbdreader` (Python + C) | `JLDBDReader.jl` |

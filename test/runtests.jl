@@ -265,6 +265,77 @@ if HAS_REFERENCE
         # DBD has 2881 + SBD has 1 = 2882 m_depth values (concat eng→eng)
         @test length(ts) == 2882
     end
+
+    @testset "Real-file: MultiDBD with eng_dir/sci_dir (split directories)" begin
+        # Validates the multi-directory file-selection logic against a
+        # realistic split-directory layout populated outside the test.
+        eng_dir = "/tmp/split_test/eng"
+        sci_dir = "/tmp/split_test/sci"
+        cache   = "/tmp/cache"
+        if isdir(eng_dir) && isdir(sci_dir)
+
+            # 1) eng_dir alone: only engineering files
+            m = MultiDBD(eng_dir=eng_dir, cachedir=cache)
+            @test length(m.files_eng) == 6
+            @test length(m.files_sci) == 0
+            @test "m_depth" in parameter_names(m, :eng)
+
+            # 2) sci_dir alone: only science files
+            m = MultiDBD(sci_dir=sci_dir, cachedir=cache)
+            @test length(m.files_eng) == 0
+            @test length(m.files_sci) == 4
+            @test "sci_water_temp" in parameter_names(m, :sci)
+
+            # 3) Both: union — 6 eng + 4 sci
+            m = MultiDBD(eng_dir=eng_dir, sci_dir=sci_dir, cachedir=cache)
+            @test length(m.files_eng) == 6
+            @test length(m.files_sci) == 4
+
+            # 4) complemented_files_only with both dirs: drops MBDs (no partner),
+            #    keeps DBD/SBD/TBD/EBD pairs => 4 eng + 4 sci
+            m = MultiDBD(eng_dir=eng_dir, sci_dir=sci_dir, cachedir=cache,
+                         complemented_files_only=true)
+            @test length(m.files_eng) == 4
+            @test length(m.files_sci) == 4
+
+            # 5) Restrict to DBD+EBD pairs only via patterns
+            m = MultiDBD(eng_dir=eng_dir, sci_dir=sci_dir, cachedir=cache,
+                         eng_pattern="*.[dD][bB][dD]",
+                         sci_pattern="*.[eE][bB][dD]",
+                         complemented_files_only=true)
+            @test length(m.files_eng) == 2
+            @test length(m.files_sci) == 2
+
+            # 6) End-to-end: sync science onto engineering from separate dirs
+            m = MultiDBD(eng_dir=eng_dir, sci_dir=sci_dir, cachedir=cache,
+                         eng_pattern="*.[dD][bB][dD]",
+                         sci_pattern="*.[eE][bB][dD]")
+            t, depth, temp = get_sync(m, "m_depth", "sci_water_temp")
+            @test length(t) == length(depth) == length(temp)
+            @test sum(isfinite, temp) > 0   # at least some non-NaN after interp
+        end
+    end
+
+    @testset "find_paired_file: case fallback across directories" begin
+        eng_dir = "/tmp/split_test/eng"
+        sci_dir = "/tmp/split_test/sci"
+        if isdir(eng_dir) && isdir(sci_dir)
+            # Uppercase input, finds uppercase sibling in sci_dir
+            p = JLDBDReader.find_paired_file(joinpath(eng_dir, "02390000.DBD"),
+                                              [sci_dir])
+            @test p == joinpath(sci_dir, "02390000.EBD")
+
+            # Lowercase input, finds lowercase sibling
+            p = JLDBDReader.find_paired_file(joinpath(eng_dir, "02010000.dbd"),
+                                              [sci_dir])
+            @test p == joinpath(sci_dir, "02010000.ebd")
+
+            # MBD: no sibling EBD in sci/, no MBD-pair in eng/ — should be nothing
+            p = JLDBDReader.find_paired_file(joinpath(eng_dir, "02010000.mbd"),
+                                              [sci_dir])
+            @test p === nothing    # no .nbd exists
+        end
+    end
 end
 
 end  # outer testset
