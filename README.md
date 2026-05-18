@@ -144,7 +144,7 @@ The Julia algorithm was validated by:
    - `sylvia`, deployment 2024-09-30 (`02390000.DBD/.SBD/.MBD/.TBD`)
 3. Comparing SHA-256 fingerprints of the resulting float64 value arrays against `dbdreader`'s output.
 
-**All 34 validated `(file, parameter)` combinations match `dbdreader` exactly** — across all five DBD-family file types (DBD/SBD/MBD/EBD-equivalent/TBD) and both little-endian flagged file structures. Reference fingerprints are stored in [`test/reference_fingerprints.json`](test/reference_fingerprints.json) and the integration tests in `test/runtests.jl` will check the Julia output against them when real files are present.
+**All 45 validated `(file, parameter)` combinations match `dbdreader` exactly** — across both gliders and all five readable DBD-family file types (DBD, SBD, MBD, EBD, TBD). Reference fingerprints are stored in [`test/reference_fingerprints.json`](test/reference_fingerprints.json) and the integration tests in `test/runtests.jl` will check the Julia output against them when real files are present.
 
 ## Installation
 

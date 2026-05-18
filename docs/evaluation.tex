@@ -184,17 +184,14 @@ against the output of \texttt{dbdreader} 0.5.x configured with the matching
 cache files.
 
 \paragraph{Result.}
-All 34 \texttt{(file, parameter)} combinations tested produced
+All 45 \texttt{(file, parameter)} combinations tested produced
 \emph{identical} float64 arrays — same length, same min/max, same SHA-256
-— covering parameters such as \texttt{m\_depth}, \texttt{m\_heading},
+— covering DBD, SBD, MBD, EBD, and TBD file types for both gliders, and
+parameters such as \texttt{m\_depth}, \texttt{m\_heading},
 \texttt{m\_pitch}, \texttt{m\_roll}, \texttt{m\_battery},
 \texttt{m\_gps\_lat}, \texttt{m\_gps\_lon}, \texttt{m\_present\_time},
 \texttt{sci\_water\_temp}, \texttt{sci\_water\_cond},
-\texttt{sci\_water\_pressure}, and \texttt{sci\_m\_present\_time}.  The
-two gliders span different sensor list CRCs, different
-\texttt{sensors\_per\_cycle} values (102 / 1729 / 134 / 10 for sylvia vs.
-64 / 1696 / 134 / 14 for electa), and different mission configurations
-— a reasonable cross-section.
+\texttt{sci\_water\_pressure}, and \texttt{sci\_m\_present\_time}.
 
 \subsection{Bugs found during \texttt{JLDBDReader.jl} development}
 
@@ -224,10 +221,9 @@ prevent regressions.
   \item The \texttt{*LIST.DAT} mission-config files (\texttt{SBDLIST.DAT}
         etc.) are not substitutes for cache files: they record
         \emph{recording-interval} metadata, not byte sizes.
-  \item The MBD and EBD files for glider \texttt{electa} in the original
-        fixture set lacked matching cache files (\texttt{9cde8b23} and
-        \texttt{085b9e63}) and could not be byte-validated.  Sylvia's
-        full file set (DBD/SBD/MBD/TBD) has been validated.
+  \item LZ4-compressed glider files (\texttt{.dcd}/\texttt{.ecd}/etc.) have
+        unit tests against the LZ4 block format specification but have not
+        been round-tripped through a real compressed glider file.
   \item Encoding versions other than \texttt{5} have not been tested
         (the package issues a warning).
   \item The package targets Julia $\geq$ 1.10.
