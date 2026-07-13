@@ -1,7 +1,7 @@
 name = "SlocumIO"
 uuid = "8a4d5f6e-3c2a-4f0b-9e1d-2c5b7a8e9d3f"
 authors = ["Donglai Gong <15986815+truedichotomy@users.noreply.github.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
