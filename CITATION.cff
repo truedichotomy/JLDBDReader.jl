@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "JLDBDReader.jl: a pure-Julia reader for Slocum glider binary data files"
+type: software
+authors:
+  - family-names: Gong
+    given-names: Donglai
+    orcid: "https://orcid.org/0000-0002-1697-1739"
+version: 0.1.0
+date-released: "2026-07-13"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/truedichotomy/JLDBDReader.jl"
+keywords:
+  - oceanography
+  - underwater glider
+  - Slocum
+  - glider data
+  - dbd
+  - data readers
+  - Julia
+abstract: >-
+  JLDBDReader.jl reads Teledyne Webb Slocum ocean-glider binary data files
+  (.dbd, .sbd, .mbd, .ebd, .tbd, .nbd and their LZ4-compressed variants) in
+  pure Julia: sensor-list caching, per-parameter extraction, multi-file
+  splicing, and synchronization of parameters onto a common time base. It is a
+  Julia translation of the Python dbdreader package by Lucas Merckelbach
+  (GPL-3.0-or-later, hence this package's license), validated byte-for-byte
+  against dbdreader's output via SHA-256 fingerprints of the decoded arrays.

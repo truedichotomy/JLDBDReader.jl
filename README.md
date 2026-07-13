@@ -2,7 +2,7 @@
 
 A pure-Julia reader for Slocum ocean glider binary data files (`.dbd`, `.sbd`, `.mbd`, `.ebd`, `.tbd`, `.nbd`) and their LZ4-compressed variants (`.dcd`, `.scd`, `.mcd`, `.ecd`, `.tcd`, `.ncd`).
 
-This is a ground-up Julia translation of the Python [`dbdreader`](https://github.com/smerckel/dbdreader) package by Lucas Merckelbach (Helmholtz-Zentrum Hereon), addressing the architectural issues, bugs, and design shortcomings identified in a critical evaluation of that codebase (see [`docs/evaluation.pdf`](docs/evaluation.pdf)).
+This is a ground-up Julia translation of the Python [`dbdreader`](https://github.com/smerckel/dbdreader) package by Lucas Merckelbach (Helmholtz-Zentrum Hereon), addressing the architectural issues, bugs, and design shortcomings identified in a critical evaluation of that codebase (see [`docs/evaluation.pdf`](docs/evaluation.pdf)). As a derivative of dbdreader it is licensed **GPL-3.0-or-later**, matching upstream (see Licensing below).
 
 ## Status
 
@@ -161,3 +161,16 @@ For development:
 ## License
 
 The original `dbdreader` is GPL-3.0.  This is a clean-room reimplementation based on the documented Slocum binary format (and `dbdreader`'s public algorithm description), not a derivative work. Released under the MIT License (see `LICENSE`).
+
+## Licensing and provenance
+
+JLDBDReader.jl is a Julia translation of
+[`dbdreader`](https://github.com/smerckel/dbdreader) by Lucas Merckelbach
+(Helmholtz-Zentrum Hereon), which is licensed GPL-3.0-or-later. As a derivative
+work, JLDBDReader.jl is likewise distributed under the
+**GNU General Public License v3.0 or later** (see [LICENSE](LICENSE)).
+The byte-for-byte validation against `dbdreader`'s output
+(`test/reference_fingerprints.json`, `tools/julia_reference.py`) is original to
+this package. Note the GPL applies to this reader only: packages that consume
+its *output tables* (e.g. GliderADCP.jl's `slocum_nav`) are not derivatives and
+carry their own licenses.

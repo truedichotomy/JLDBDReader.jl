@@ -1,6 +1,6 @@
 name = "JLDBDReader"
 uuid = "8a4d5f6e-3c2a-4f0b-9e1d-2c5b7a8e9d3f"
-authors = ["Translated from smerckel/dbdreader (GPL-3) — clean-room Julia rewrite"]
+authors = ["Donglai Gong <15986815+truedichotomy@users.noreply.github.com>"]
 version = "0.1.0"
 
 [deps]
@@ -15,4 +15,8 @@ JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 test = ["Test", "JSON"]
 
 [compat]
+Dates = "1"
+JSON = "0.21, 1"
+Printf = "1"
+Test = "1"
 julia = "1.10"
